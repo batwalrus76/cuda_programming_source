@@ -342,3 +342,149 @@ __device__ void merge_array6(const u32 * const src_array,
 		}
 	}
 }
+
+// Uses multiple threads for reduction type merge
+__device__ void merge_array5(const u32 * const src_array,
+								u32 * const dest_array,
+								const u32 num_lists,
+								const u32 num_elements,
+								const u32 tid)
+{
+	const u32 num_elements_per_list = (num_elements / num_lists);
+
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+	__shared__ u32 reduction_val[MAX_NUM_LISTS];
+	__shared__ u32 reduction_idx[MAX_NUM_LISTS];
+
+	//Clear the working sets
+	list_indexes[tid] = 0;
+	reduction_val[tid] = 0;
+	reduction_idx[tid] = 0;
+	__syncthreads();
+
+	for(u32 i=0; i<num_elements; i++)
+	{
+		// We need (num_lists / 2) active threads
+		u32 tid_max = num_lists >> 1;
+
+		u32 data;
+
+		// If the current list has already been
+		// emptied then ignore it
+		if(list_indexes[tid] < num_elements_per_list)
+		{
+			const u32 src_idx = tid + (list_indexes[tid] * num_lists);
+
+			data = src_array[src_idx];
+		}
+		else
+		{
+			data = 0xFFFFFFFF;
+		}
+
+		reduction_val[tid] = data;
+		reduction_idx[tid] = tid;
+
+		__syncthreads();
+
+		while(tid_max != 0)
+		{
+			if(tid < tid_max)
+			{
+				const u32 val2_idx = tid + tid_max;
+
+				const u32 val2 = reduction_val[val2_idx];
+
+				if(reduction_val[tid] > val2)
+				{
+					reduction_val[tid] = val2;
+					reduction_idx[tid] = reduction_idx[val2_idx];
+				}
+			}
+			tid_max >>= 1;
+
+			__syncthreads();
+		}
+		if(tid == 0)
+		{
+			list_indexes[reduction_idx[0]]++;
+
+			dest_array[i] = reduction_val[0];
+		}
+
+		__syncthreads();
+	}
+}
+
+#define REDUCTION_SIZE 8
+#define REDUCTION_SIZE_BIT_SHIFT 3
+#define MAX_ACTIVE_REDUCTIONS ((MAX_NUM_LISTS) / REDUCTION_SIZE)
+
+__device__ void merge_array9(const u32 * const src_array,
+								u32 * const dest_array,
+								const u32 num_lists,
+								const u32 num_elements,
+								const u32 tid)
+{
+	u32 data = src_array[tid];
+
+	const u32 s_idx = tid >> REDUCTION_SIZE_BIT_SHIFT;
+
+	const u32 num_reductions = num_lists >> REDUCTION_SIZE_BIT_SHIFT;
+	const u32 num_elements_per_list = (num_elements / num_lists);
+
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+	list_indexes[tid] = 0;
+
+	for(u32 i=0; i<num_elements; i++)
+	{
+		__shared__ u32 min_val[MAX_ACTIVE_REDUCTIONS];
+		__shared__ u32 min_tid;
+
+		if(tid < num_lists)
+		{
+			min_val[s_idx] = 0xFFFFFFFF;
+			min_tid = 0xFFFFFFFF;
+		}
+
+		__syncthreads();
+
+		atomicMin(&min_val[s_idx], data);
+
+		if(num_reductions > 0)
+		{
+			__syncthreads();
+
+			if(tid < num_reductions)
+			{
+				atomicMin(&min_val[0], min_val[tid]);
+			}
+
+			__syncthreads();
+		}
+
+		if(min_val[0] == data)
+		{
+			atomicMin(&min_tid, tid);
+		}
+
+		__syncthreads();
+
+		if(tid == min_tid)
+		{
+			list_indexes[tid]++;
+
+			dest_array[i] = data;
+
+			if(list_indexes[tid] < num_elements_per_list)
+			{
+				data = src_array[tid + (list_indexes[tid] * num_lists)];
+			}
+			else
+			{
+				data = 0xFFFFFFFF;
+			}
+		}
+		__syncthreads();
+	}
+}
