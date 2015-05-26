@@ -149,6 +149,168 @@ __host__ float add_test_interleaved(INTERLEAVED_T * const host_dest_ptr,
 	return delta;
 }
 
+__host__ TIMER_T select_samples_cpu(u32 * const sample_data,
+									const u32 sample interval,
+									const u32 num_elements,
+									const u32 * const src_data)
+{
+	const TIMER_T start_time = get_time();
+	u32 sample_idx = 0;
+
+	for(u32 src_idx=0; src_idx<num_elements;src_idx+=sample_interval)
+	{
+		sample_data[sample_idx] = src_data[src_idx];
+		sample_idx++;
+	}
+
+	const TIMER_T end_time = get_time();
+	return end_time - start_time;
+}
+
+__global__ void select_samples_gpu_kernel(u32 * const sample_data,
+											const u32 sample_interval,
+											const u32 * const src_data)
+{
+	const u32 tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	sample_data[tid] = src_data[tid*sample_interval];
+}
+
+__host__ TIMER_T select_samples_gpu(u32 * const sample_data,
+									const u32 sample_interval,
+									const u32 num_elements,
+									const u32 num_samples,
+									const u32 * const src_data,
+									const u32 num_threads_per_block,
+									const char * prefix)
+{
+	const u32 num_blocks = num_samples / num_threads_per_block;
+
+	assert((num_blocks * num_threads_per_block) == num_samples);
+
+	start_device_timer();
+
+	select_samples_gpu_kernel<<<num_blocks, num_threads_per_block>>>(sample_data, sample_interval, src_data);
+	cuda_error_check(prefix, "Error invoking select select_samples_gpu_kernel");
+
+	const TIMER_T func_time = stop_device_timer();
+
+	return func_time;
+}
+
+__host__ TIMER_T sort_samples_cpu(u32 * const sample_data,
+									const u32 num_samples)
+{
+	const TIMER_T start_time = get_time();
+
+	qsort(sample_data, num_samples, sizeof(u32), &compare_func);
+
+	const TIMER_T end_time = get_time();
+	return end_time - start_time;
+}
+
+__host__ TIMER_T count_bins_cpu(const u32 num_samples,
+								const u32 num_elements,
+								const u32 * const src_data,
+								const u32 * const sample_data,
+								u32 * const bin_count)
+{
+	const TIMER_T start_time = get_time();
+	for(u32 src_idx = 0; src_idx<num_elements;src_idx++)
+	{
+		const u32 data_to_find = src_data[src_idx];
+		const u32 idx = bin_search3(sample_data,data_to_find,num_samples);
+		bin_count[idx]++;
+	}
+
+	const TIMER_T end_time = get_time();
+	return end_time - start_time;
+}
+
+__host__ __device__ u32 bin_search3(const u32 * const src_data,
+									const u32 search_value,
+									const u32 num_elements)
+{
+	// Take the middle of the two sections
+	u32 size = (num_elements >> 1);
+
+	u32 start_idx = 0;
+	bool found = false;
+
+	do
+	{
+		const u32 src_idx = (start_idx+size);
+		const u32 test_value = src_data[src_idx];
+
+		if(test_value == search_value)
+		{
+			found = true;
+		}
+		else if(search_value > test value)
+		{
+			start_idx = (start_idx+size);
+		}
+
+		if(found == false)
+		{
+			size >>= 1;
+		}
+	}
+	while((found == false) && (size != 0));
+
+	return (start_idx + size);
+}
+
+//Single data point atomic add to gmem
+__global__ void count_bins_gpu_kernel5(const u32 num_samples,
+										const u32 num_elements
+										const u32 * const src_data,
+										const u32 * const sample_data,
+										u32 * const bin_count)
+{
+	const u32 tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+	const u32 data_to_find = src_data[tid];
+
+	const u32 idx = bin_search3(sample_data, data_to_find, num_samples);
+
+	atomicAdd(&bin_count[idx],1);
+}
+
+__host__ TIMER_T count_bins_gpu(const u32 num_samples,
+										const u32 * const src_data,
+										const u32 * const sample_data,
+										u32 * const bin_count,
+										const u32 num_threads,
+										const char * prefix)
+{
+
+	const u32 num_blocks = num_samples / num_threads;
+
+	start_device_timer();
+
+	count_bins_gpu_kernel5<<<num_blocks,num_threads>>>(num_samples,src_data, sample_data, bin_count);
+	cuda_error_check(prefix, "Error invoking count_bins_gpu_kernel");
+
+	const TIMER_T func_time = stop_device_timer();
+
+	return func_time;
+}
+
+__host__ TIMER_T calc_bin_idx_cpu(const u32 num_samples,
+									const u32 * const bin_count,
+									u32 * const dest_bin_idx)
+{
+	const TIMER_T start_time = get_time();
+	u32 prefix_sum = 0;
+	for(u32 i = 0; i<num_samples;i++)
+	{
+		dest_bin_idx[i] = prefix_sum;
+		prefix_sum += bin_count[i]
+	}
+
+	const TIMER_T end_time = get_time();
+	return end_time - start_time;
+}
 
 /**
  * This macro checks return value of the CUDA runtime call and exits
