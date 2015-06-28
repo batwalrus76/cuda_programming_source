@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <conio.h>
 
 __host__ void cpu_sort(u32 * const data, const u32 num_elements)
 {
@@ -169,7 +168,7 @@ u32 find_min(const u32 * const src_array,
 			if(data <= min_val)
 			{
 				min_val = data;
-				min_idx = i
+				min_idx = i;
 			}
 		}
 	}
@@ -196,3 +195,296 @@ __global__ void gpu_sort_array_array(u32 * const data,
 			num_elements, tid);
 }
 
+__device__ void copy_data_to_shared(const u32 * const data,
+									u32 * const sort_tmp,
+									const u32 num_lists,
+									const u32 num_elements,
+									const u32 tid)
+{
+	// Copy data into temp store
+	for(u32 i = 0; i<num_elements; i++)
+	{
+		sort_tmp[i+tid] = data[i+tid];
+	}
+	__syncthreads();
+}
+
+#define MAX_NUM_LISTS 4
+
+// Uses a single thread for merge
+__device__ void merge_array1(const u32 * const src_array,
+							u32 * const dest_array,
+							const u32 num_lists,
+							const u32 num_elements,
+							const u32 tid)
+{
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+
+	// Multiple threads
+	list_indexes[tid] = 0;
+	__syncthreads();
+
+	// Single threaded
+	if(tid == 0)
+	{
+		const u32 num_elements_per_list = (num_elements / num_lists);
+
+		for (u32 i = 0; i < num_elements; i++)
+		{
+			u32 min_val = 0xFFFFFFFF;
+			u32 min_idx = 0;
+
+			// Iterate over each of the lists
+			for(u32 list=0; list<num_lists;list++)
+			{
+				//If the current list has already been emptied then ignored it
+				if(list_indexes[list] < num_elements_per_list)
+				{
+					const u32 src_idx = list + (list_indexes[list] * num_lists);
+
+					const u32 data = src_array[src_idx];
+
+					if(data <= min_val)
+					{
+						min_val = data;
+						min_idx = list;
+					}
+				}
+			}
+			list_indexes[min_idx]++;
+			dest_array[i] = min_val;
+		}
+	}
+}
+
+// Uses multiple threads for merge
+// Deals with multiple identical entries in the data
+__device__ void merge_array6(const u32 * const src_array,
+								u32 * const dest_array,
+								const u32 num_lists,
+								const u32 num_elements,
+								const u32 tid)
+{
+	const u32 num_elements_per_list = (num_elements / num_lists);
+
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+	list_indexes[tid] = 0;
+
+	//Wait for list_indexes[tid] to be cleared
+	__syncthreads();
+
+	//Iterate over all elements
+	for(u32 i=0; i<num_elements; i++)
+	{
+		//Create a value shared with other threads
+		__shared__ u32 min_val;
+		__shared__ u32 min_tid;
+
+		// Use a temp register for work purposes
+		u32 data;
+
+		//If the current list has not already been
+		//emptied then read from it, else ignore it
+		if(list_indexes[tid] < num_elements_per_list)
+		{
+			//Work out from the list_index, the index into
+			// the linear array
+			const u32 src_idx = tid + (list_indexes[tid] * num_lists);
+
+			//Read the data from the list for the given
+			// thread
+			data = src_array[src_idx];
+		}
+		else
+		{
+			data = 0xFFFFFFFF;
+		}
+
+		//Have thread zero clear the min values
+		if(tid == 0)
+		{
+			// Write a very large value so the first
+			// thread wins with the min
+			min_val = 0xFFFFFFFF;
+			min_tid = 0xFFFFFFFF;
+		}
+
+		// Wait for all threads
+		__syncthreads();
+
+		// Have every thread try to store it's value into
+		// min_val. Only the thread with the lowest value
+		// will win.
+		atomicMin(&min_val, data);
+
+		//Make sure all threads have taken their turn
+		__syncthreads();
+
+		// If this thread was the one with the minimum
+		if(min_val == data)
+		{
+			// Check for equal values
+			// Lowest tid wins, and does the write
+			atomicMin(&min_tid, tid);
+		}
+
+		// Make sure all threads have taken their turn.
+		__syncthreads();
+
+		// If this thread has the lowest tid
+		if(tid == min_tid)
+		{
+			// Increment the list pointer for this thread
+			list_indexes[tid]++;
+
+			// Store the winning value
+			dest_array[i] = data;
+		}
+	}
+}
+
+// Uses multiple threads for reduction type merge
+__device__ void merge_array5(const u32 * const src_array,
+								u32 * const dest_array,
+								const u32 num_lists,
+								const u32 num_elements,
+								const u32 tid)
+{
+	const u32 num_elements_per_list = (num_elements / num_lists);
+
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+	__shared__ u32 reduction_val[MAX_NUM_LISTS];
+	__shared__ u32 reduction_idx[MAX_NUM_LISTS];
+
+	//Clear the working sets
+	list_indexes[tid] = 0;
+	reduction_val[tid] = 0;
+	reduction_idx[tid] = 0;
+	__syncthreads();
+
+	for(u32 i=0; i<num_elements; i++)
+	{
+		// We need (num_lists / 2) active threads
+		u32 tid_max = num_lists >> 1;
+
+		u32 data;
+
+		// If the current list has already been
+		// emptied then ignore it
+		if(list_indexes[tid] < num_elements_per_list)
+		{
+			const u32 src_idx = tid + (list_indexes[tid] * num_lists);
+
+			data = src_array[src_idx];
+		}
+		else
+		{
+			data = 0xFFFFFFFF;
+		}
+
+		reduction_val[tid] = data;
+		reduction_idx[tid] = tid;
+
+		__syncthreads();
+
+		while(tid_max != 0)
+		{
+			if(tid < tid_max)
+			{
+				const u32 val2_idx = tid + tid_max;
+
+				const u32 val2 = reduction_val[val2_idx];
+
+				if(reduction_val[tid] > val2)
+				{
+					reduction_val[tid] = val2;
+					reduction_idx[tid] = reduction_idx[val2_idx];
+				}
+			}
+			tid_max >>= 1;
+
+			__syncthreads();
+		}
+		if(tid == 0)
+		{
+			list_indexes[reduction_idx[0]]++;
+
+			dest_array[i] = reduction_val[0];
+		}
+
+		__syncthreads();
+	}
+}
+
+#define REDUCTION_SIZE 8
+#define REDUCTION_SIZE_BIT_SHIFT 3
+#define MAX_ACTIVE_REDUCTIONS ((MAX_NUM_LISTS) / REDUCTION_SIZE)
+
+__device__ void merge_array9(const u32 * const src_array,
+								u32 * const dest_array,
+								const u32 num_lists,
+								const u32 num_elements,
+								const u32 tid)
+{
+	u32 data = src_array[tid];
+
+	const u32 s_idx = tid >> REDUCTION_SIZE_BIT_SHIFT;
+
+	const u32 num_reductions = num_lists >> REDUCTION_SIZE_BIT_SHIFT;
+	const u32 num_elements_per_list = (num_elements / num_lists);
+
+	__shared__ u32 list_indexes[MAX_NUM_LISTS];
+	list_indexes[tid] = 0;
+
+	for(u32 i=0; i<num_elements; i++)
+	{
+		__shared__ u32 min_val[MAX_ACTIVE_REDUCTIONS];
+		__shared__ u32 min_tid;
+
+		if(tid < num_lists)
+		{
+			min_val[s_idx] = 0xFFFFFFFF;
+			min_tid = 0xFFFFFFFF;
+		}
+
+		__syncthreads();
+
+		atomicMin(&min_val[s_idx], data);
+
+		if(num_reductions > 0)
+		{
+			__syncthreads();
+
+			if(tid < num_reductions)
+			{
+				atomicMin(&min_val[0], min_val[tid]);
+			}
+
+			__syncthreads();
+		}
+
+		if(min_val[0] == data)
+		{
+			atomicMin(&min_tid, tid);
+		}
+
+		__syncthreads();
+
+		if(tid == min_tid)
+		{
+			list_indexes[tid]++;
+
+			dest_array[i] = data;
+
+			if(list_indexes[tid] < num_elements_per_list)
+			{
+				data = src_array[tid + (list_indexes[tid] * num_lists)];
+			}
+			else
+			{
+				data = 0xFFFFFFFF;
+			}
+		}
+		__syncthreads();
+	}
+}
