@@ -1,6 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <conio.h>
 
 __global__ void what_is_my_id_2d_A(
 				unsigned int * const block_x,
@@ -15,7 +13,7 @@ __global__ void what_is_my_id_2d_A(
 				unsigned int * const block_dimy)
 {
 	const unsigned int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
-	const unsigned int idy = (blockIdy.y * blockDim.y) + threadIdx.y;
+	const unsigned int idy = (blockIdx.y * blockDim.y) + threadIdx.y;
 	const unsigned int thread_idx = ((gridDim.x * blockDim.x) + idy) + idx;
 
 	block_x[thread_idx] = blockIdx.x;
@@ -75,7 +73,7 @@ int main(void)
 	unsigned int * gpu_grid_dimy;
 	unsigned int * gpu_block_dimy;
 
-	/* Allocate four arrays on the GPU */
+	/* Allocate arrays on the GPU */
 	cudaMalloc((void **)&gpu_block_x, ARRAY_SIZE_IN_BYTES);
 	cudaMalloc((void **)&gpu_block_y, ARRAY_SIZE_IN_BYTES);
 	cudaMalloc((void **)&gpu_thread, ARRAY_SIZE_IN_BYTES);
@@ -95,16 +93,16 @@ int main(void)
 			case 0:
 			{
 				/* Execute our kernel */
-				what_is_my_id_2d_A<<blocks_rect, threads_rect>>>(gpu_block_x, gpu_block_y,
-	gpu_thread, gpu_warp, gpu_calc_thread, gpu_xthread, gpu_ythread, gpu_grid_dimx, gpu_block_dimx,
+				what_is_my_id_2d_A<<<blocks_rect, threads_rect>>>(gpu_block_x, gpu_block_y,
+	gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread, gpu_grid_dimx, gpu_block_dimx,
 	gpu_grid_dimy, gpu_block_dimy);
 			} break;
 
 			case 1:
 			{
 				/* Execute our kernel */
-				what_is_my_id_2d_A<<blocks_square, threads_square>>>(gpu_block_x, gpu_block_y,
-	gpu_thread, gpu_warp, gpu_calc_thread, gpu_xthread, gpu_ythread, gpu_grid_dimx, gpu_block_dimx,
+				what_is_my_id_2d_A<<<blocks_square, threads_square>>>(gpu_block_x, gpu_block_y,
+	gpu_thread, gpu_calc_thread, gpu_xthread, gpu_ythread, gpu_grid_dimx, gpu_block_dimx,
 	gpu_grid_dimy, gpu_block_dimy);
 			} break;
 
@@ -133,14 +131,9 @@ int main(void)
 						cpu_calc_thread[y][x], cpu_block_x[y][x], cpu_block_y[y][x], cpu_thread[y][x], cpu_ythread[y][x],
 						cpu_xthread[y][x], cpu_grid_dimx[y][x], cpu_block_dimx[y][x], cpu_grid_dimy[y][x], cpu_block_dimy[y][x]);
 
-				/* Wait for any key so we can see the console window */
-				ch = getch();
 			}
 		}
 
-		/*Wait for any key so we canb see the console window */
-		printf("Press any key to continue\n");
-		ch = getch();
 
 		/* Free the arrays on the GPU as now we're done with them */
 		cudaFree(gpu_block_x);

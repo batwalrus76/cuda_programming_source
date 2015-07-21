@@ -5,6 +5,10 @@
 *.cubin
 *.fatbin
 
+blocks
+grids
+histogram
+
 # OS generated files #
 ######################
 .DS_Store
