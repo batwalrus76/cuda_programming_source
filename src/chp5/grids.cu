@@ -14,7 +14,7 @@ __global__ void what_is_my_id_2d_A(
 {
 	const unsigned int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	const unsigned int idy = (blockIdx.y * blockDim.y) + threadIdx.y;
-	const unsigned int thread_idx = ((gridDim.x * blockDim.x) + idy) + idx;
+	const unsigned int thread_idx = ((gridDim.x * blockDim.x) * idy) + idx;
 
 	block_x[thread_idx] = blockIdx.x;
 	block_y[thread_idx] = blockIdx.y;
@@ -27,7 +27,6 @@ __global__ void what_is_my_id_2d_A(
 	grid_dimy[thread_idx] = gridDim.y;
 	block_dimy[thread_idx] = blockDim.y;
 }
-
 
 #define ARRAY_SIZE_X 32
 #define ARRAY_SIZE_Y 16
@@ -50,7 +49,7 @@ unsigned int cpu_block_dimy[ARRAY_SIZE_Y][ARRAY_SIZE_X];
 int main(void)
 {
 	/* Total thread count = 32 * 4 = 128 */
-	const dim3 threads_rect(32,4); 
+	const dim3 threads_rect(32,4);
 	const dim3 blocks_rect(1,4);
 
 	/* Total thread count = 16 * 8 = 128 */
@@ -127,7 +126,7 @@ int main(void)
 		{
 			for(int x = 0; x < ARRAY_SIZE_X; x++)
 			{
-				printf("CT: %2u BKX: %1u BKY: %1u TID: %2u YTID: %2u XTID: %2u GDX: %1u BDX: %1u GDY: %1u BDY: %1u\n", 
+				printf("CT: %2u BKX: %1u BKY: %1u TID: %2u YTID: %2u XTID: %2u GDX: %1u BDX: %1u GDY: %1u BDY: %1u\n",
 						cpu_calc_thread[y][x], cpu_block_x[y][x], cpu_block_y[y][x], cpu_thread[y][x], cpu_ythread[y][x],
 						cpu_xthread[y][x], cpu_grid_dimx[y][x], cpu_block_dimx[y][x], cpu_grid_dimy[y][x], cpu_block_dimy[y][x]);
 
